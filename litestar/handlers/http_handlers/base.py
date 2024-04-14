@@ -553,11 +553,10 @@ class HTTPRouteHandler(BaseRouteHandler):
             else self._response_handler_mapping["default_handler"],
         )
 
-    async def to_response(self, app: Litestar, data: Any, request: Request) -> ASGIApp:
+    async def to_response(self, data: Any, request: Request) -> ASGIApp:
         """Return a :class:`Response <.response.Response>` from the handler by resolving and calling it.
 
         Args:
-            app: The :class:`Litestar <litestar.app.Litestar>` app instance
             data: Either an instance of a :class:`Response <.response.Response>`,
                 a Response instance or an arbitrary value.
             request: A :class:`Request <.connection.Request>` instance
@@ -569,7 +568,7 @@ class HTTPRouteHandler(BaseRouteHandler):
             data = return_dto_type(request).data_to_encodable_type(data)
 
         response_handler = self.get_response_handler(is_response_type_data=isinstance(data, Response))
-        return await response_handler(app=app, data=data, request=request)  # type: ignore[call-arg]
+        return await response_handler(app=request.scope["app"], data=data, request=request)  # type: ignore[call-arg]
 
     def on_registration(self, app: Litestar, route: BaseRoute) -> None:
         super().on_registration(app, route=route)
@@ -638,7 +637,7 @@ class HTTPRouteHandler(BaseRouteHandler):
         if self.resolve_guards():
             await self.authorize_connection(connection=request)
 
-        response = await self._get_response_for_request(scope=scope, request=request)
+        response = await self._get_response_for_request(request=request)
 
         await response(scope, receive, send)
 
@@ -650,7 +649,6 @@ class HTTPRouteHandler(BaseRouteHandler):
 
     async def _get_response_for_request(
         self,
-        scope: Scope,
         request: Request[Any, Any, Any],
     ) -> ASGIApp:
         """Return a response for the request.
@@ -660,9 +658,7 @@ class HTTPRouteHandler(BaseRouteHandler):
         response will be cached.
 
         Args:
-            scope: The Request's scope
             request: The Request instance
-            route_handler: The HTTPRouteHandler instance
 
         Returns:
             An instance of Response or a compatible ASGIApp or a subclass of it
@@ -670,9 +666,9 @@ class HTTPRouteHandler(BaseRouteHandler):
         if self.cache and (response := await self._get_cached_response(request=request)):
             return response
 
-        return await self._call_handler_function(scope=scope, request=request)
+        return await self._call_handler_function(request=request)
 
-    async def _call_handler_function(self, scope: Scope, request: Request) -> ASGIApp:
+    async def _call_handler_function(self, request: Request) -> ASGIApp:
         """Call the before request handlers, retrieve any data required for the route handler, and call the route
         handler's ``to_response`` method.
 
@@ -686,20 +682,20 @@ class HTTPRouteHandler(BaseRouteHandler):
             response_data = await before_request_handler(request)
 
         if not response_data:
-            response_data, cleanup_group = await self._get_response_data(request=request, scope=scope)
+            response_data, cleanup_group = await self._get_response_data(request=request)
 
-        response: ASGIApp = await self.to_response(app=scope["app"], data=response_data, request=request)
+        response: ASGIApp = await self.to_response(data=response_data, request=request)
 
         if cleanup_group:
             await cleanup_group.cleanup()
 
         return response
 
-    async def _get_response_data(self, scope: Scope, request: Request) -> tuple[Any, DependencyCleanupGroup | None]:
+    async def _get_response_data(self, request: Request) -> tuple[Any, DependencyCleanupGroup | None]:
         """Determine what kwargs are required for the given route handler's ``fn`` and calls it."""
         parsed_kwargs: dict[str, Any] = {}
         cleanup_group: DependencyCleanupGroup | None = None
-        parameter_model = self._get_kwargs_model_for_route(scope["path_params"].keys())
+        parameter_model = self._get_kwargs_model_for_route(request.scope["path_params"].keys())
 
         if parameter_model.has_kwargs and self.signature_model:
             kwargs = parameter_model.to_kwargs(connection=request)
